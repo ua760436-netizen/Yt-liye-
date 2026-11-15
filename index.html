@@ -200,6 +200,8 @@ main{padding:14px 14px 110px}
 .cmt .acts{display:flex;gap:14px;margin-top:6px;font-size:11.5px;color:var(--mut);font-weight:700}
 .cmt .acts button{color:var(--mut);font-weight:700;font-size:11.5px;display:flex;gap:4px;align-items:center}
 .cmt .acts button.on{color:#ff6d8c}
+.cmt.pinned{background:rgba(255,196,0,.07);border-left:3px solid #ffc400;padding:8px 8px 8px 9px;border-radius:8px}
+.cmt .pinTag{font-size:11px;color:#ffc400;font-weight:700;margin-bottom:3px}
 .reply{margin:8px 0 0 42px;padding-left:12px;border-left:2px solid var(--line);font-size:12.5px}
 .reply b{font-size:12px}
 .reply .t{color:var(--dim);font-size:10.5px;margin-left:6px}
@@ -1171,7 +1173,9 @@ function compactStateForStorage(){
   try{
     var capComments=function(arr,cap){
       if(!Array.isArray(arr)||arr.length<=cap) return;
+      var keepPinned=arr.filter(function(c){return c&&c.pinned;});
       arr.splice(0,arr.length-cap);
+      keepPinned.forEach(function(c){ if(arr.indexOf(c)<0) arr.unshift(c); });
     };
     var capReplies=function(arr){
       if(!Array.isArray(arr)) return;
@@ -2081,11 +2085,13 @@ function commentHTML(c,kind,host){
   var colors=["#c40028","#8e44ad","#16a085","#d35400","#2c3e50","#c0392b","#27ae60"];
   var col=colors[c.user.length%colors.length];
   var repCount=(c.replies||[]).length;
-  var html='<div class="cmt"><div class="av" style="background:'+col+'">'+esc(c.user.charAt(0).toUpperCase())+'</div><div class="bd">'+
+  var html='<div class="cmt'+(c.pinned?' pinned':'')+'"><div class="av" style="background:'+col+'">'+esc(c.user.charAt(0).toUpperCase())+'</div><div class="bd">'+
+   (c.pinned?'<div class="pinTag">📌 Pinned by '+esc((GS.channel&&GS.channel.name)||'creator')+'</div>':'')+
    '<div class="hd"><b>'+esc(c.user)+'</b><span class="t">'+timeAgo(c.t)+'</span></div>'+
    '<div class="tx">'+esc(c.text)+'</div>'+
    '<div class="acts"><button class="'+(c.likedByMe?'on':'')+'" data-act="like-comment" data-kind="'+kind+'" data-host="'+host+'" data-cid="'+c.id+'">👍 '+fmt(c.likes)+'</button>'+
    '<button data-act="toggle-reply" data-cid="'+c.id+'">Reply</button>'+
+   '<button class="'+(c.pinned?'on':'')+'" data-act="pin-comment" data-kind="'+kind+'" data-host="'+host+'" data-cid="'+c.id+'">📌 '+(c.pinned?'Unpin':'Pin')+'</button>'+
    (repCount?'<span class="dim">'+repCount+' repl'+(repCount===1?'y':'ies')+'</span>':'')+'</div>'+
    '<div class="reply-box hidden" id="rb-'+c.id+'"><input class="field" id="ri-'+c.id+'" placeholder="Write a reply..." maxlength="300"><button class="btn btn-red" style="padding:10px 14px;font-size:12px" data-act="send-reply" data-kind="'+kind+'" data-host="'+host+'" data-cid="'+c.id+'">POST REPLY</button></div>'+
    renderReplies(c)+
@@ -2440,9 +2446,11 @@ function renderDetail(){
 function renderCommentsList(v){
   var list=v.comments||[];
   var extra=(v.cc||0)-list.length;
-  var html="";
-  for(var i=list.length-1;i>=0;i--) html+=commentHTML(list[i],"video",v.id);
+  var html="",pinHtml="";
+  for(var pi=0;pi<list.length;pi++) if(list[pi]&&list[pi].pinned) pinHtml+=commentHTML(list[pi],"video",v.id);
+  for(var i=list.length-1;i>=0;i--) if(!(list[i]&&list[i].pinned)) html+=commentHTML(list[i],"video",v.id);
   if(extra>0) html='<p class="dim" style="font-size:12px;margin:10px 2px">＋ '+fmt(extra)+' more comments from viewers...</p>'+html;
+  html=pinHtml+html;
   if(!html) html='<p class="dim" style="font-size:12.5px;margin:12px 2px">No comments yet — they will start rolling in.</p>';
   return html;
 }
@@ -2667,7 +2675,8 @@ function renderPostComments(p){
   var el=$("pcw-"+p.id); if(!el) return;
   var html='<div class="cinput"><input class="field" id="pci-'+p.id+'" placeholder="Write a comment..." maxlength="300"><button class="btn btn-red" style="padding:10px 13px;font-size:12px" data-act="send-comment" data-kind="post" data-host="'+p.id+'">POST</button></div>';
   var list=p.comments||[];
-  for(var i=list.length-1;i>=0;i--) html+=commentHTML(list[i],"post",p.id);
+  for(var pi=0;pi<list.length;pi++) if(list[pi]&&list[pi].pinned) html+=commentHTML(list[pi],"post",p.id);
+  for(var i=list.length-1;i>=0;i--) if(!(list[i]&&list[i].pinned)) html+=commentHTML(list[i],"post",p.id);
   el.innerHTML=html;
 }
 
@@ -3239,6 +3248,21 @@ document.addEventListener("click",function(e){
       markDirty();
       if(kind==="video"){ var cv=$("commentsWrap"); if(cv&&curVideo) cv.innerHTML=renderCommentsList(curVideo); }
       else renderPostComments(hostObj);
+      break;
+    }
+    case "pin-comment":{
+      var pnKind=el.getAttribute("data-kind"), pnHost=el.getAttribute("data-host"), pnCid=el.getAttribute("data-cid");
+      var pnObj=pnKind==="video"?findContent(pnHost):null;
+      if(pnKind==="post"){ for(var pnA=0;pnA<GS.posts.length;pnA++) if(GS.posts[pnA].id===pnHost) pnObj=GS.posts[pnA]; }
+      if(!pnObj) break;
+      var pnList=pnObj.comments||[], pnWas=false;
+      for(var pnB=0;pnB<pnList.length;pnB++) if(pnList[pnB].id===pnCid) pnWas=!!pnList[pnB].pinned;
+      for(var pnC=0;pnC<pnList.length;pnC++) delete pnList[pnC].pinned;
+      if(!pnWas) for(var pnD=0;pnD<pnList.length;pnD++) if(pnList[pnD].id===pnCid) pnList[pnD].pinned=true;
+      markDirty(); save();
+      if(pnKind==="video"){ var pnWrap=$("commentsWrap"); if(pnWrap&&curVideo) pnWrap.innerHTML=renderCommentsList(curVideo); }
+      else renderPostComments(pnObj);
+      toast(pnWas?"📌 Comment unpinned":"📌 Comment pinned");
       break;
     }
     case "toggle-reply":{
@@ -4510,6 +4534,7 @@ setInterval(function(){try{wrapPublish();addTechItems();}catch(e){}},1500);
  var gate=document.getElementById('ctCloudGate'), form=document.getElementById('ctCloudForm'), email=document.getElementById('ctCloudEmail'), pass=document.getElementById('ctCloudPassword'), submit=document.getElementById('ctCloudSubmit'), googleBtn=document.getElementById('ctCloudGoogle'), toggle=document.getElementById('ctCloudToggle'), reset=document.getElementById('ctCloudReset'), msg=document.getElementById('ctCloudMessage'), badge=document.getElementById('ctCloudSyncBadge');
  var isSignup=false, auth=null, db=null, currentUser=null, ready=false, applyingCloud=false, syncTimer=null, lastCloudJSON='', originalSave=null, retryTimer=null;
  var restoring=false, restoringUid=null, recover=document.getElementById('ctCloudRecover'), retryBtn=document.getElementById('ctCloudRetry'), switchBtn=document.getElementById('ctCloudSwitch'), outBtn=document.getElementById('ctCloudSignOutBtn'), toolsBox=document.getElementById('ctCloudTools');
+ var pushing=false,cloudDirty=false,lastPushAt=0,lastLoadedTs=0,failNotified=false,MIN_GAP=15000;
  function friendly(e){
   var c=(e&&e.code)||'',m={
    'auth/unauthorized-domain':'Is website ka domain Firebase mein authorized nahi hai. Firebase Console > Authentication > Settings > Authorized domains mein is site ka domain add karo.',
@@ -4530,25 +4555,55 @@ setInterval(function(){try{wrapPublish();addTechItems();}catch(e){}},1500);
  function status(t){if(badge){badge.textContent='☁ '+t;badge.style.display='block';}}
  function showGate(show){if(gate)gate.style.display=show?'flex':'none';}
  function localHasChannel(){try{return !!(window.GS&&GS.channel);}catch(e){return false;}}
- function currentState(){try{return JSON.parse(JSON.stringify({gs:window.GS,acc:window.ACC}));}catch(e){return null;}}
- function stateBytes(obj){try{return new Blob([JSON.stringify(obj)]).size;}catch(e){return 0;}}
+ function linkActive(){try{var a=window.ACC;if(a&&a.items&&a.active&&a.items[a.active]){var it=a.items[a.active];it.gs=window.GS;delete it.gsRef;}}catch(e){}}
+ /* ACC.items[active].gs is the same object as GS, so we save it only once (half the data) */
+ function currentJSON(){
+  try{
+   if(!window.GS||!window.GS.channel)return null;
+   var acc=window.ACC,accOut=acc;
+   if(acc&&acc.items&&acc.active&&acc.items[acc.active]&&acc.items[acc.active].gs===window.GS){
+    var items={};
+    Object.keys(acc.items).forEach(function(k){var it=acc.items[k];if(k===acc.active){var c={};for(var f in it)if(f!=='gs')c[f]=it[f];c.gsRef=true;items[k]=c;}else items[k]=it;});
+    accOut={};for(var f2 in acc)accOut[f2]=acc[f2];accOut.items=items;
+   }
+   return JSON.stringify({gs:window.GS,acc:accOut});
+  }catch(e){return null;}
+ }
+ function currentState(){var j=currentJSON();try{return j?JSON.parse(j):null;}catch(e){return null;}}
+ function strBytes(x){try{return new Blob([x]).size;}catch(e){return x.length*2;}}
+ /* identical big images (thumbnails) are stored once and referenced by a token */
+ var IMG_RE=/"data:image\/[a-z0-9.+-]+;base64,[A-Za-z0-9+\/=]{1500,}"/g;
+ function packText(json){
+  var imgs=[],map={};
+  var d=json.replace(IMG_RE,function(m){var k=map[m];if(k===undefined){k=imgs.length;map[m]=k;imgs.push(m.slice(1,-1));}return '"@@IMG'+k+'@@"';});
+  return JSON.stringify({__ctv:3,d:d,i:imgs});
+ }
+ function unpackText(text){
+  var o=JSON.parse(text);
+  if(o&&o.__ctv===3){var s2=o.d.replace(/"@@IMG(\d+)@@"/g,function(m,n){var im=o.i[+n];return im===undefined?m:JSON.stringify(im);});return JSON.parse(s2);}
+  return o;
+ }
+ function withTimeout(pr,ms){return new Promise(function(res,rej){var t=setTimeout(function(){var er=new Error('Save timeout: internet slow hai ya Firestore tak pahunch nahi pa raha');er.code='timeout';rej(er);},ms);pr.then(function(v){clearTimeout(t);res(v);},function(e){clearTimeout(t);rej(e);});});}
  function stateRef(uid){return db.collection('users').doc(uid).collection('creatorTube').doc('main');}
  /* Compatible chunked cloud storage. Older CreatorTube builds saved large states in main_c0...main_cN. */
- var CHUNK_CHARS=300000, MAX_CLOUD_BYTES=40*1024*1024, WRITE_GROUP=4;
+ var CHUNK_CHARS=200000, MAX_CLOUD_BYTES=40*1024*1024, WRITE_GROUP=4;
  function chunkRef(uid,i){return db.collection('users').doc(uid).collection('creatorTube').doc('main_c'+i);}
  function splitJSON(json){var parts=[],i=0;while(i<json.length){var end=Math.min(i+CHUNK_CHARS,json.length);if(end<json.length){var c=json.charCodeAt(end-1);if(c>=0xD800&&c<=0xDBFF)end--;}parts.push(json.slice(i,end));i=end;}return parts;}
- async function saveState(uid,json,payload,bytes){
+ async function saveState(uid,text,bytes,clientTs){
   var ts=firebase.firestore.FieldValue.serverTimestamp(),oldCount=0;
   try{var cur=await stateRef(uid).get();if(cur.exists&&cur.data()&&cur.data().chunked)oldCount=Number(cur.data().count)||0;}catch(e){}
-  if(bytes<=850000){await stateRef(uid).set({state:payload,chunked:false,updatedAt:ts,schemaVersion:2});for(var d=0;d<oldCount;d++){try{await chunkRef(uid,d).delete();}catch(e){}}return;}
-  var parts=splitJSON(json),rev=String(Date.now())+'-'+Math.random().toString(16).slice(2,8);
+  if(bytes<=800000){await stateRef(uid).set({text:text,chunked:false,clientTs:clientTs,updatedAt:ts,schemaVersion:3});for(var d=0;d<oldCount;d++){try{await chunkRef(uid,d).delete();}catch(e){}}return;}
+  var parts=splitJSON(text),rev=String(Date.now())+'-'+Math.random().toString(16).slice(2,8);
   for(var g=0;g<parts.length;g+=WRITE_GROUP){var batch=db.batch();for(var k=g;k<Math.min(g+WRITE_GROUP,parts.length);k++)batch.set(chunkRef(uid,k),{i:k,rev:rev,data:parts[k]});await batch.commit();status('saving… '+Math.min(g+WRITE_GROUP,parts.length)+'/'+parts.length);}
-  await stateRef(uid).set({chunked:true,count:parts.length,rev:rev,updatedAt:ts,schemaVersion:2});for(var x=parts.length;x<oldCount;x++){try{await chunkRef(uid,x).delete();}catch(e){}}
+  await stateRef(uid).set({chunked:true,count:parts.length,rev:rev,clientTs:clientTs,updatedAt:ts,schemaVersion:3});for(var x=parts.length;x<oldCount;x++){try{await chunkRef(uid,x).delete();}catch(e){}}
  }
  async function loadState(uid){
-  var snap=await stateRef(uid).get();if(!snap.exists)return null;var d=snap.data()||{};
-  if(!d.chunked)return d.state||null;
-  var count=Number(d.count)||0;if(!count||count>200)throw new Error('Invalid chunk count in cloud data ('+count+'). No data was changed.');
+  var snap=await stateRef(uid).get();lastLoadedTs=0;if(!snap.exists)return null;var d=snap.data()||{};lastLoadedTs=Number(d.clientTs)||0;
+  if(!d.chunked){
+   if(typeof d.text==='string'){try{return unpackText(d.text);}catch(e){throw new Error('Cloud data readable nahi hai. No data was changed.');}}
+   return d.state||null;
+  }
+  var count=Number(d.count)||0;if(!count||count>400)throw new Error('Invalid chunk count in cloud data ('+count+'). No data was changed.');
   var reads=[];for(var i=0;i<count;i++)reads.push(chunkRef(uid,i).get());var docs=await Promise.all(reads),s='',revisionMismatch=false;
   for(var j=0;j<docs.length;j++){
    var cd=docs[j].exists?docs[j].data():null;if(!cd)throw new Error('Cloud data chunk '+j+' is missing. No data was changed.');
@@ -4558,38 +4613,65 @@ setInterval(function(){try{wrapPublish();addTechItems();}catch(e){}},1500);
    var part=cd.data!==undefined?cd.data:(cd.Data!==undefined?cd.Data:(cd.DATA!==undefined?cd.DATA:null));
    if(typeof part!=='string')throw new Error('Cloud data chunk '+j+' has no readable text field. No data was changed.');s+=part;
   }
-  var parsed;try{parsed=JSON.parse(s);}catch(e){throw new Error('Cloud chunks were found, but their combined text is not valid JSON. No data was changed.');}
+  var parsed;try{parsed=unpackText(s);}catch(e){throw new Error('Cloud chunks were found, but their combined text is not valid JSON. No data was changed.');}
   if(!parsed||typeof parsed!=='object'||!parsed.gs||typeof parsed.gs!=='object'||!parsed.gs.channel)throw new Error('Cloud chunks were assembled, but the channel data did not pass validation. No data was changed.');
   if(revisionMismatch)console.warn('CreatorTube: cloud chunk revision metadata differs; assembled JSON passed structural validation.');
   return parsed;
  }
- async function pushCloud(){
-  if(!currentUser||!db||applyingCloud||!ready)return;
-  var payload=currentState();if(!payload||!payload.gs||!payload.gs.channel)return;
-  var json;try{json=JSON.stringify(payload);}catch(e){status('save error');return;}
-  if(json===lastCloudJSON)return;var bytes=stateBytes(payload);
-  if(bytes>MAX_CLOUD_BYTES){status('data too large for cloud');message('Cloud save paused: channel data is '+(bytes/1048576).toFixed(1)+' MB. Local save is still available.');return;}
-  status('saving…');try{await saveState(currentUser.uid,json,payload,bytes);lastCloudJSON=json;status('saved');}
-  catch(e){console.error('CreatorTube cloud save failed',e);status('save failed');message('Cloud save failed: '+(e.code||e.message||'unknown error')+'. Your existing cloud data was not intentionally cleared.');}
+ function nowLabel(){try{return new Date().toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'});}catch(e){return '';}}
+ function cancelQueue(){clearTimeout(syncTimer);syncTimer=null;}
+ function queueCloud(){
+  if(!currentUser||applyingCloud||!ready)return;
+  cloudDirty=true;if(syncTimer)return;
+  var wait=Math.max(4000,MIN_GAP-(Date.now()-lastPushAt));
+  syncTimer=setTimeout(function(){syncTimer=null;pushCloud();},wait);
  }
- function queueCloud(){if(!currentUser||applyingCloud)return;clearTimeout(syncTimer);syncTimer=setTimeout(pushCloud,1200);}
+ function flushCloud(){if(!currentUser||!ready||applyingCloud||!cloudDirty)return;cancelQueue();pushCloud();}
+ /* returns true when the cloud copy is up to date, false otherwise */
+ async function pushCloud(force){
+  if(!currentUser||!db||applyingCloud||!ready)return false;
+  if(pushing){cloudDirty=true;return false;}
+  var json=currentJSON();if(!json)return false;
+  if(!force&&json===lastCloudJSON){cloudDirty=false;return true;}
+  pushing=true;cloudDirty=false;lastPushAt=Date.now();var okk=false;
+  status('saving…');
+  try{
+   var text=packText(json),bytes=strBytes(text);
+   if(bytes>MAX_CLOUD_BYTES){status('data too large for cloud');message('Cloud save paused: channel data is '+(bytes/1048576).toFixed(1)+' MB. Local save is still available.');return false;}
+   await withTimeout(saveState(currentUser.uid,text,bytes,lastPushAt),90000);
+   lastCloudJSON=json;failNotified=false;okk=true;status('saved ✓ '+nowLabel());
+  }catch(e){
+   console.error('CreatorTube cloud save failed',e);
+   status('save failed · tap to retry');
+   if(!failNotified&&typeof window.toast==='function'){failNotified=true;try{window.toast('☁ Cloud save fail: '+friendly(e));}catch(x){}}
+   cloudDirty=true;clearTimeout(retryTimer);retryTimer=setTimeout(function(){retryTimer=null;queueCloud();},20000);
+  }finally{pushing=false;if(cloudDirty&&!retryTimer&&!syncTimer)queueCloud();}
+  return okk;
+ }
  async function restoreCloud(user){
   if(restoring&&restoringUid===user.uid)return;
   restoring=true;restoringUid=user.uid;
   currentUser=user;ready=false;status('loading…');showRecover(false);
   try{
-   var payload=await loadState(user.uid);
-   if(payload&&payload.gs){
+   var payload=await loadState(user.uid),cloudTs=lastLoadedTs,localTs=0;
+   try{localTs=Number(localStorage.getItem('CT_LOCAL_TS'))||0;}catch(e){}
+   if(payload&&payload.gs&&getOwner()===user.uid&&localHasChannel()&&localTs>cloudTs+1000){
+    /* is device ka data cloud se naya hai (cloud save pending tha): overwrite mat karo, cloud update karo */
+    ready=true;lastCloudJSON='';showGate(false);if(toolsBox)toolsBox.style.display='flex';
+    if(typeof window.enterApp==='function')window.enterApp();
+    status('saving…');await pushCloud(true);
+   }else if(payload&&payload.gs){
     applyingCloud=true;setOwner(user.uid);
     if(payload.gs)window.GS=payload.gs;
     if(payload.acc&&typeof payload.acc==='object')window.ACC=payload.acc;
     if(typeof window.normalizeGS==='function')window.GS=window.normalizeGS(window.GS);
-    lastCloudJSON=JSON.stringify(currentState());
+    linkActive();lastCloudJSON=currentJSON()||'';cloudDirty=false;
+    try{localStorage.setItem('CT_LOCAL_TS',String(cloudTs||1));}catch(e){}
     try{if(typeof window.save==='function')window.save(true);}catch(e){}
     applyingCloud=false;
     ready=true;showGate(false);if(toolsBox)toolsBox.style.display='flex';
     if(typeof window.enterApp==='function'&&localHasChannel())window.enterApp();
-    status('saved');message('Cloud data loaded.');
+    status('saved ✓ '+nowLabel());message('Cloud data loaded.');
    }else{
     var adopt=false;
     if(localHasChannel()){
@@ -4599,9 +4681,9 @@ setInterval(function(){try{wrapPublish();addTechItems();}catch(e){}},1500);
     }
     ready=true;showGate(false);if(toolsBox)toolsBox.style.display='flex';
     setOwner(user.uid);
-    if(adopt) await pushCloud();
+    if(adopt) await pushCloud(true);
     else if(typeof window.showCreate==='function')window.showCreate();
-    status('signed in');
+    if(!adopt)status('signed in ✓');
    }
    if(!localHasChannel()&&typeof window.showCreate==='function'&&gate.style.display==='none')window.showCreate();
   }catch(e){applyingCloud=false;console.error('CreatorTube cloud load failed',e);ready=false;status('cloud load failed');showGate(true);showRecover(true);message('Login ho gaya, lekin saved data load nahi hua: '+friendly(e)+'\n\nRETRY dabao, ya SIGN OUT / SWITCH se doosra account use karo. Cloud data overwrite nahi hua.');}
@@ -4611,15 +4693,15 @@ setInterval(function(){try{wrapPublish();addTechItems();}catch(e){}},1500);
  function setOwner(u){try{localStorage.setItem('CT_LOCAL_OWNER',u);}catch(e){}}
  function wipeLocal(){
   return new Promise(function(resolve){
-   try{localStorage.removeItem(window.KEY);localStorage.removeItem(window.ACC_KEY);localStorage.removeItem('CT_ANALYTICS_PREFS_V2');localStorage.removeItem('CT_LOCAL_OWNER');}catch(e){}
+   try{localStorage.removeItem(window.KEY);localStorage.removeItem(window.ACC_KEY);localStorage.removeItem('CT_ANALYTICS_PREFS_V2');localStorage.removeItem('CT_LOCAL_OWNER');localStorage.removeItem('CT_LOCAL_TS');}catch(e){}
    var done=false,go=function(){if(!done){done=true;location.reload();resolve();}};
    try{if(window.indexedDB&&window.IDB_NAME){var dr=indexedDB.deleteDatabase(window.IDB_NAME);dr.onsuccess=dr.onerror=dr.onblocked=go;setTimeout(go,1500);}else go();}catch(e){go();}
   });
  }
  async function doSignOut(){
   if(!auth)return;
-  if(currentUser&&ready){try{clearTimeout(syncTimer);await pushCloud();}catch(e){}}
-  var unsynced=false;try{unsynced=localHasChannel()&&JSON.stringify(currentState())!==lastCloudJSON;}catch(e){}
+  var unsynced=false;
+  if(currentUser&&ready&&localHasChannel()){cancelQueue();for(var w=0;w<200&&pushing;w++)await new Promise(function(r){setTimeout(r,300);});unsynced=!(await pushCloud(true));}
   if(unsynced&&!confirm('Is device ka progress cloud mein save NAHI hua. Sign out karne se wo delete ho jayega. Phir bhi sign out karein?'))return;
   try{await auth.signOut();}catch(e){console.warn('signOut',e);}
   await wipeLocal();
@@ -4644,7 +4726,7 @@ setInterval(function(){try{wrapPublish();addTechItems();}catch(e){}},1500);
    });
    if(typeof window.save==='function'&&!window.save.__ctCloudWrapped){
     originalSave=window.save;
-    var wrapped=function(force){var result=originalSave.apply(this,arguments);if(currentUser&&!applyingCloud)queueCloud();return result;};
+    var wrapped=function(force){var result=originalSave.apply(this,arguments);if(currentUser&&ready&&!applyingCloud){try{localStorage.setItem('CT_LOCAL_TS',String(Date.now()));}catch(e){}queueCloud();}return result;};
     wrapped.__ctCloudWrapped=true;window.save=wrapped;
    }
    auth.onAuthStateChanged(function(user){
@@ -4685,16 +4767,16 @@ setInterval(function(){try{wrapPublish();addTechItems();}catch(e){}},1500);
  function validPayload(p){return !!(p&&typeof p==='object'&&p.gs&&typeof p.gs==='object'&&p.gs.channel);}
  async function applyImported(payload){
   if(!currentUser||!db){alert('Pehle sign in karo.');return false;}
-  clearTimeout(syncTimer);applyingCloud=true;
+  cancelQueue();applyingCloud=true;
   try{
    window.GS=payload.gs;
    if(payload.acc&&typeof payload.acc==='object')window.ACC=payload.acc;
    if(typeof window.normalizeGS==='function')window.GS=window.normalizeGS(window.GS);
+   linkActive();
    try{if(typeof window.save==='function')window.save(true);}catch(e){console.warn('save',e);}
   }finally{applyingCloud=false;}
   lastCloudJSON='';ready=true;
-  await pushCloud();
-  var ok=false;try{ok=lastCloudJSON===JSON.stringify(currentState());}catch(e){}
+  var ok=await pushCloud(true);
   if(ok){alert('Import ho gaya aur cloud mein save ho gaya. Page reload ho raha hai.');location.reload();}
   else{alert('Data is device par load ho gaya, lekin cloud mein save NAHI hua. Internet aur Firestore rules check karo, phir dobara Import karo.');try{if(typeof window.enterApp==='function')window.enterApp();}catch(e){}}
   return ok;
@@ -4783,9 +4865,10 @@ setInterval(function(){try{wrapPublish();addTechItems();}catch(e){}},1500);
  if(outBtn)outBtn.addEventListener('click',function(){if(confirm('Sign out karein? Aapka progress cloud mein safe rahega.'))doSignOut();});
  toggle.addEventListener('click',function(){isSignup=!isSignup;submit.textContent=isSignup?'CREATE ACCOUNT':'SIGN IN';toggle.textContent=isSignup?'I already have an account':'Create new account';pass.autocomplete=isSignup?'new-password':'current-password';message(isSignup?'Use an email you can access and a password of at least 6 characters.':'Enter your email and password to continue.');});
  reset.addEventListener('click',async function(){if(!auth){message('Firebase is not ready yet.');return;}var em=email.value.trim();if(!em){message('Enter your email first, then tap Forgot password again.');email.focus();return;}try{await auth.sendPasswordResetEmail(em);message('Password reset email sent if that address has an account. Check inbox and spam.');}catch(e){message((e.code?e.code+': ':'')+(e.message||'Could not send reset email.'));}});
- document.addEventListener('visibilitychange',function(){if(!document.hidden)queueCloud();});
- window.addEventListener('online',function(){if(currentUser)queueCloud();});
- window.addEventListener('pagehide',function(){if(currentUser)queueCloud();});
+ document.addEventListener('visibilitychange',function(){if(document.hidden)flushCloud();});
+ window.addEventListener('online',function(){if(currentUser&&ready)queueCloud();});
+ window.addEventListener('pagehide',function(){flushCloud();});
+ if(badge){badge.style.cursor='pointer';badge.addEventListener('click',function(){if(currentUser&&ready){cancelQueue();pushCloud(true);}else if(auth&&auth.currentUser){restoreCloud(auth.currentUser);}});}
  if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',start,{once:true});else start();
 })();
 </script>
